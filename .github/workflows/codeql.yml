@@ -16,8 +16,8 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  schedule:
-    - cron: '27 3 * * 3'
+  #schedule:
+    #- cron: '43 2 * * 6'
 
 jobs:
   analyze:
@@ -43,8 +43,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+        - language: actions
+          build-mode: none
         - language: go
           build-mode: autobuild
+        - language: java-kotlin
+          build-mode: none # This mode only analyzes Java. Set this to 'autobuild' or 'manual' to analyze Kotlin too.
+        - language: javascript-typescript
+          build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
         # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
@@ -56,6 +62,10 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        fetch-depth: 0
+
 
     # Add any setup steps before running the `github/codeql-action/init` action.
     # This includes steps like installing compilers or runtimes (`actions/setup-node`
@@ -97,3 +107,317 @@ jobs:
       uses: github/codeql-action/analyze@v4
       with:
         category: "/language:${{matrix.language}}"
+    
+  generate-report:
+    name: Generate CodeQL CSV Report
+    needs: analyze
+    runs-on: ubuntu-latest
+  
+    permissions:
+      security-events: read
+      contents: read
+  
+    steps:
+  
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+  
+      ##########################################################################
+      # Generate report name
+      ##########################################################################
+      - name: Generate Report Name
+        id: report
+        shell: bash
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+  
+          REF_NAME="${GITHUB_REF_NAME//\//-}"
+  
+          REPORT_DATE=$(date -u +"%d%b%Y")
+  
+          ARTIFACT_NAME="codeql-report-${REF_NAME}-${SHORT_SHA}"
+  
+          REPORT_FILE="${ARTIFACT_NAME}-${REPORT_DATE}.csv"
+  
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "report_file=$REPORT_FILE" >> "$GITHUB_OUTPUT"
+  
+          echo "Artifact : $ARTIFACT_NAME"
+          echo "File     : $REPORT_FILE"
+  
+      ##########################################################################
+      # Wait for CodeQL indexing
+      ##########################################################################
+      - name: Wait for CodeQL Analysis
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          echo "Polling for CodeQL analysis on commit $COMMIT_SHA..."
+          for i in $(seq 1 20); do
+            LATEST=$(gh api \
+              "/repos/${{ github.repository }}/code-scanning/analyses?ref=${{ github.ref }}&per_page=1" \
+              --jq '.[0].commit_sha // empty' 2>/dev/null || true)
+            if [ "$LATEST" = "$COMMIT_SHA" ]; then
+              echo "Analysis ready for commit $COMMIT_SHA"
+              break
+            fi
+            echo "Attempt $i/20 — latest indexed commit: '$LATEST', waiting 30s..."
+            sleep 30
+          done
+  
+      ##########################################################################
+      # Download alerts
+      ##########################################################################
+      - name: Download CodeQL Alerts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/code-scanning/alerts?per_page=100&ref=${{ github.ref }}" \
+            --paginate > codeql-report.json
+  
+      ##########################################################################
+      # Generate CSV
+      ##########################################################################
+      - name: Generate CSV & HTML
+        shell: bash
+        run: |
+          python3 << 'EOF'
+  
+          import csv
+          import html
+          import json
+          import os
+          from collections import Counter
+          from datetime import datetime
+          
+          commit_sha = os.environ.get("GITHUB_SHA", "")
+          
+          short_sha = commit_sha[:7]
+          
+          ref_name = os.environ.get("GITHUB_REF_NAME","")
+          
+          scan_date = datetime.utcnow().strftime("%d-%b-%Y %H:%M:%S UTC")
+          
+          with open("codeql-report.json","r",encoding="utf-8") as f:
+              alerts = json.load(f)
+          
+          # Only include alerts whose most recent instance is on the current commit.
+          # Alerts from deleted files in older commits are excluded this way.
+          alerts = [
+              a for a in alerts
+              if a.get("most_recent_instance", {}).get("commit_sha") == commit_sha
+          ]
+          
+          rows = []
+          summary = Counter()
+          
+          for alert in alerts:
+          
+              rule = alert.get("rule",{})
+          
+              severity = (
+                  rule.get("security_severity_level")
+                  or rule.get("severity")
+                  or "Unknown"
+              )
+          
+              summary[severity] += 1
+          
+              location = (
+                  alert.get("most_recent_instance",{})
+                       .get("location",{})
+              )
+          
+              rows.append([
+                  severity,
+                  rule.get("id",""),
+                  rule.get("name",""),
+                  rule.get("description",""),
+                  alert.get("state",""),
+                  alert.get("tool",{}).get("name",""),
+                  location.get("path",""),
+                  location.get("start_line",""),
+                  alert.get("html_url","")
+              ])
+          
+          #######################################################
+          # CSV
+          #######################################################
+          
+          with open("report.csv","w",newline="",encoding="utf-8") as csvfile:
+          
+              writer = csv.writer(csvfile)
+          
+              writer.writerow([
+                  "Severity",
+                  "Rule ID",
+                  "Rule Name",
+                  "Description",
+                  "State",
+                  "Tool",
+                  "File",
+                  "Line",
+                  "Alert URL"
+              ])
+          
+              writer.writerows(rows)
+          
+          #######################################################
+          # HTML
+          #######################################################
+          
+          html_rows = ""
+          
+          for r in rows:
+          
+              html_rows += f"""
+              <tr>
+                  <td>{html.escape(str(r[0]))}</td>
+                  <td>{html.escape(str(r[1]))}</td>
+                  <td>{html.escape(str(r[2]))}</td>
+                  <td>{html.escape(str(r[3]))}</td>
+                  <td>{html.escape(str(r[4]))}</td>
+                  <td>{html.escape(str(r[5]))}</td>
+                  <td>{html.escape(str(r[6]))}</td>
+                  <td>{html.escape(str(r[7]))}</td>
+              </tr>
+              """
+          
+          summary_rows = ""
+          
+          for sev,count in sorted(summary.items()):
+              summary_rows += f"<tr><td>{sev}</td><td>{count}</td></tr>"
+          
+          html_report = f"""
+          <!DOCTYPE html>
+          <html>
+          <head>
+          <meta charset="utf-8">
+          <title>CodeQL Report</title>
+          
+          <style>
+          
+          body {{
+              font-family: Arial, Helvetica, sans-serif;
+              margin:40px;
+          }}
+          
+          h1 {{
+              color:#0b5cad;
+          }}
+          
+          table {{
+              border-collapse:collapse;
+              width:100%;
+              margin-top:20px;
+          }}
+          
+          th {{
+              background:#0b5cad;
+              color:white;
+              padding:8px;
+          }}
+          
+          td {{
+              border:1px solid #ddd;
+              padding:8px;
+              vertical-align:top;
+              font-size:13px;
+          }}
+          
+          </style>
+          
+          </head>
+          
+          <body>
+          
+          <h1>CodeQL Vulnerability Report</h1>
+          
+          <p><b>Repository:</b> {html.escape(os.environ.get("GITHUB_REPOSITORY",""))}</p>
+          <p><b>Branch:</b> {html.escape(ref_name)}</p>
+          <p><b>Commit:</b> {commit_sha}</p>
+          <p><b>Scan Date:</b> {scan_date}</p>
+          
+          <h2>Summary</h2>
+          
+          <table style="width:300px">
+          
+          <tr>
+          <th>Severity</th>
+          <th>Count</th>
+          </tr>
+          
+          {summary_rows}
+          
+          </table>
+          
+          <h2>Detailed Findings</h2>
+          
+          <table>
+          
+          <tr>
+          <th>Severity</th>
+          <th>Rule ID</th>
+          <th>Rule Name</th>
+          <th>Description</th>
+          <th>State</th>
+          <th>Tool</th>
+          <th>File</th>
+          <th>Line</th>
+          </tr>
+          
+          {html_rows}
+          
+          </table>
+          
+          </body>
+          </html>
+          """
+          
+          with open("report.html","w",encoding="utf-8") as f:
+              f.write(html_report)
+          
+          print(f"Generated CSV and HTML with {len(rows)} alerts.")
+  
+          EOF
+  
+      ##########################################################################
+      # Rename
+      ##########################################################################
+      - name: Rename Reports
+        shell: bash
+        run: |
+          CSV_FILE="${{ steps.report.outputs.report_file }}"
+      
+          HTML_FILE="${CSV_FILE%.csv}.html"
+      
+          mv report.csv "$CSV_FILE"
+          mv report.html "$HTML_FILE"
+      
+          echo "HTML_FILE=$HTML_FILE" >> $GITHUB_ENV
+  
+      ##########################################################################
+      # Verify
+      ##########################################################################
+      - name: Verify
+        run: |
+          ls -lh
+          test -f "${{ steps.report.outputs.report_file }}"
+  
+      ##########################################################################
+      # Upload
+      ##########################################################################
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.report.outputs.artifact_name }}
+          path: |
+            ${{ steps.report.outputs.report_file }}
+            ${{ env.HTML_FILE }}
+          retention-days: 90
+          if-no-files-found: error
