@@ -1,0 +1,444 @@
+# For most projects, this workflow file will not need changing; you simply need
+# to commit it to your repository.
+#
+# You may wish to alter this file to override the set of languages analyzed,
+# or to provide custom queries or build logic.
+#
+# ******** NOTE ********
+# We have attempted to detect the languages in your repository. Please check
+# the `language` matrix defined below to confirm you have the correct set of
+# supported CodeQL languages.
+#
+name: "CodeQL Advanced on Release"
+run-name: CodeQL Analysis - ${{ github.event.inputs.release_tag || github.ref_name }}
+
+on:
+  push:
+    tags:
+      - 'PROJECT/release/cut/*'
+
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (for example PROJECT/release/cut/5.8.1)'
+        required: true
+        type: string
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    # Runner size impacts CodeQL analysis time. To learn more, please see:
+    #   - https://gh.io/recommended-hardware-resources-for-running-codeql
+    #   - https://gh.io/supported-runners-and-hardware-resources
+    #   - https://gh.io/using-larger-runners (GitHub.com only)
+    # Consider using larger runners or machines with greater resources for possible analysis time improvements.
+    runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    permissions:
+      # required for all workflows
+      security-events: write
+
+      # required to fetch internal or private CodeQL packs
+      packages: read
+
+      # only required for workflows in private repositories
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - language: actions
+          build-mode: none
+        - language: go
+          build-mode: autobuild
+        - language: java-kotlin
+          build-mode: none # This mode only analyzes Java. Set this to 'autobuild' or 'manual' to analyze Kotlin too.
+        - language: javascript-typescript
+          build-mode: none
+        # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
+        # Use `c-cpp` to analyze code written in C, C++ or both
+        # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
+        # Use 'javascript-typescript' to analyze code written in JavaScript, TypeScript or both
+        # To learn more about changing the languages that are analyzed or customizing the build mode for your analysis,
+        # see https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/customizing-your-advanced-setup-for-code-scanning.
+        # If you are analyzing a compiled language, you can modify the 'build-mode' for that language to customize how
+        # your codebase is analyzed, see https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/codeql-code-scanning-for-compiled-languages
+    steps:
+    - name: Validate Release Tag
+      if: github.event_name == 'workflow_dispatch'
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        TAG="${{ github.event.inputs.release_tag }}"
+        if [[ ! "$TAG" =~ ^PROJECT/release/cut/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::Invalid release_tag '${TAG}'. Expected format: PROJECT/release/cut/X.Y.Z"
+          exit 1
+        fi
+        if ! gh api "/repos/${{ github.repository }}/git/refs/tags/${TAG}" > /dev/null 2>&1; then
+          echo "::error::Tag '${TAG}' does not exist in the repository."
+          exit 1
+        fi
+
+    - name: Checkout Release
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.release_tag || github.ref_name }}
+        fetch-depth: 0
+
+    - name: Get Tag Commit SHA
+      id: tag-sha
+      run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+    # Add any setup steps before running the `github/codeql-action/init` action.
+    # This includes steps like installing compilers or runtimes (`actions/setup-node`
+    # or others). This is typically only required for manual builds.
+    # - name: Setup runtime (example)
+    #   uses: actions/setup-example@v1
+
+    # Initializes the CodeQL tools for scanning.
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v4
+      with:
+        languages: ${{ matrix.language }}
+        build-mode: ${{ matrix.build-mode }}
+        # If you wish to specify custom queries, you can do so here or in a config file.
+        # By default, queries listed here will override any specified in a config file.
+        # Prefix the list here with "+" to use these queries and those in the config file.
+
+        # For more details on CodeQL's query packs, refer to: https://docs.github.com/en/code-security/code-scanning/automatically-scanning-your-code-for-vulnerabilities-and-errors/configuring-code-scanning#using-queries-in-ql-packs
+        # queries: security-extended,security-and-quality
+
+    # If the analyze step fails for one of the languages you are analyzing with
+    # "We were unable to automatically build your code", modify the matrix above
+    # to set the build mode to "manual" for that language. Then modify this step
+    # to build your code.
+    # ℹ️ Command-line programs to run using the OS shell.
+    # 📚 See https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstepsrun
+    - name: Run manual build steps
+      if: matrix.build-mode == 'manual'
+      shell: bash
+      run: |
+        echo 'If you are using a "manual" build mode for one or more of the' \
+          'languages you are analyzing, replace this with the commands to build' \
+          'your code, for example:'
+        echo '  make bootstrap'
+        echo '  make release'
+        exit 1
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v4
+      with:
+        category: "/language:${{matrix.language}}"
+        ref: ${{ github.event.inputs.release_tag != '' && format('refs/tags/{0}', github.event.inputs.release_tag) || github.ref }}
+        sha: ${{ steps.tag-sha.outputs.sha }}
+    
+  generate-report:
+    name: Generate CodeQL CSV Report
+    needs: analyze
+    runs-on: ubuntu-latest
+  
+    permissions:
+      security-events: read
+      contents: read
+  
+    steps:
+  
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.release_tag || github.ref_name }}
+          fetch-depth: 0
+  
+      ##########################################################################
+      # Generate report name
+      ##########################################################################
+      - name: Generate Report Name
+        id: report
+        shell: bash
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            REF_NAME="${{ github.event.inputs.release_tag }}"
+          else
+            REF_NAME="${GITHUB_REF_NAME}"
+          fi
+      
+          REF_NAME="${REF_NAME//\//-}"
+      
+          REPORT_DATE=$(date -u +"%d%b%Y")
+      
+          ARTIFACT_NAME="codeql-report-${REF_NAME}"
+      
+          REPORT_FILE="${ARTIFACT_NAME}-${REPORT_DATE}.csv"
+      
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "report_file=$REPORT_FILE" >> "$GITHUB_OUTPUT"
+      
+          echo "Artifact : $ARTIFACT_NAME"
+          echo "Report   : $REPORT_FILE"
+  
+      ##########################################################################
+      # Wait for CodeQL indexing
+      ##########################################################################
+      - name: Wait for CodeQL
+        run: sleep 20
+  
+      ##########################################################################
+      # Download alerts
+      ##########################################################################
+      - name: Download CodeQL Alerts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            SCAN_REF="refs/tags/${{ github.event.inputs.release_tag }}"
+          else
+            SCAN_REF="${GITHUB_REF}"
+          fi
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/code-scanning/alerts?per_page=100&ref=${SCAN_REF}" \
+            --paginate > codeql-report.json
+  
+      ##########################################################################
+      # Generate CSV
+      ##########################################################################
+      - name: Generate CSV & HTML
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+        shell: bash
+        run: |
+          python3 << 'EOF'
+  
+          import csv
+          import html
+          import json
+          import os
+          import subprocess
+          from collections import Counter
+          from datetime import datetime
+          
+          commit_sha = subprocess.check_output(
+              ["git","rev-parse","HEAD"],
+              text=True
+          ).strip()
+          
+          short_sha = subprocess.check_output(
+              ["git","rev-parse","--short","HEAD"],
+              text=True
+          ).strip()
+          
+          ref_name = os.environ.get("RELEASE_TAG","")
+          
+          scan_date = datetime.utcnow().strftime("%d-%b-%Y %H:%M:%S UTC")
+          
+          with open("codeql-report.json","r",encoding="utf-8") as f:
+              alerts = json.load(f)
+          
+          rows = []
+          summary = Counter()
+          
+          for alert in alerts:
+          
+              rule = alert.get("rule",{})
+          
+              severity = (
+                  rule.get("security_severity_level")
+                  or rule.get("severity")
+                  or "Unknown"
+              )
+          
+              summary[severity] += 1
+          
+              location = (
+                  alert.get("most_recent_instance",{})
+                       .get("location",{})
+              )
+          
+              rows.append([
+                  severity,
+                  rule.get("id",""),
+                  rule.get("name",""),
+                  rule.get("description",""),
+                  alert.get("state",""),
+                  alert.get("tool",{}).get("name",""),
+                  location.get("path",""),
+                  location.get("start_line",""),
+                  alert.get("html_url","")
+              ])
+          
+          #######################################################
+          # CSV
+          #######################################################
+          
+          with open("report.csv","w",newline="",encoding="utf-8") as csvfile:
+          
+              writer = csv.writer(csvfile)
+          
+              writer.writerow([
+                  "Severity",
+                  "Rule ID",
+                  "Rule Name",
+                  "Description",
+                  "State",
+                  "Tool",
+                  "File",
+                  "Line",
+                  "Alert URL"
+              ])
+          
+              writer.writerows(rows)
+          
+          #######################################################
+          # HTML
+          #######################################################
+          
+          html_rows = ""
+          
+          for r in rows:
+          
+              html_rows += f"""
+              <tr>
+                  <td>{html.escape(str(r[0]))}</td>
+                  <td>{html.escape(str(r[1]))}</td>
+                  <td>{html.escape(str(r[2]))}</td>
+                  <td>{html.escape(str(r[3]))}</td>
+                  <td>{html.escape(str(r[4]))}</td>
+                  <td>{html.escape(str(r[5]))}</td>
+                  <td>{html.escape(str(r[6]))}</td>
+                  <td>{html.escape(str(r[7]))}</td>
+              </tr>
+              """
+          
+          summary_rows = ""
+          
+          for sev,count in sorted(summary.items()):
+              summary_rows += f"<tr><td>{sev}</td><td>{count}</td></tr>"
+          
+          html_report = f"""
+          <!DOCTYPE html>
+          <html>
+          <head>
+          <meta charset="utf-8">
+          <title>CodeQL Report</title>
+          
+          <style>
+          
+          body {{
+              font-family: Arial, Helvetica, sans-serif;
+              margin:40px;
+          }}
+          
+          h1 {{
+              color:#0b5cad;
+          }}
+          
+          table {{
+              border-collapse:collapse;
+              width:100%;
+              margin-top:20px;
+          }}
+          
+          th {{
+              background:#0b5cad;
+              color:white;
+              padding:8px;
+          }}
+          
+          td {{
+              border:1px solid #ddd;
+              padding:8px;
+              vertical-align:top;
+              font-size:13px;
+          }}
+          
+          </style>
+          
+          </head>
+          
+          <body>
+          
+          <h1>CodeQL Vulnerability Report</h1>
+          
+          <p><b>Repository:</b> {html.escape(os.environ.get("GITHUB_REPOSITORY",""))}</p>
+          <p><b>Release:</b> {html.escape(ref_name)}</p>
+          <p><b>Commit:</b> {commit_sha}</p>
+          <p><b>Scan Date:</b> {scan_date}</p>
+          
+          <h2>Summary</h2>
+          
+          <table style="width:300px">
+          
+          <tr>
+          <th>Severity</th>
+          <th>Count</th>
+          </tr>
+          
+          {summary_rows}
+          
+          </table>
+          
+          <h2>Detailed Findings</h2>
+          
+          <table>
+          
+          <tr>
+          <th>Severity</th>
+          <th>Rule ID</th>
+          <th>Rule Name</th>
+          <th>Description</th>
+          <th>State</th>
+          <th>Tool</th>
+          <th>File</th>
+          <th>Line</th>
+          </tr>
+          
+          {html_rows}
+          
+          </table>
+          
+          </body>
+          </html>
+          """
+          
+          with open("report.html","w",encoding="utf-8") as f:
+              f.write(html_report)
+          
+          print(f"Generated CSV and HTML with {len(rows)} alerts.")
+  
+          EOF
+  
+      ##########################################################################
+      # Rename
+      ##########################################################################
+      - name: Rename Reports
+        shell: bash
+        run: |
+          CSV_FILE="${{ steps.report.outputs.report_file }}"
+      
+          HTML_FILE="${CSV_FILE%.csv}.html"
+      
+          mv report.csv "$CSV_FILE"
+          mv report.html "$HTML_FILE"
+      
+          echo "HTML_FILE=$HTML_FILE" >> $GITHUB_ENV
+  
+      ##########################################################################
+      # Verify
+      ##########################################################################
+      - name: Verify
+        run: |
+          ls -lh
+          test -f "${{ steps.report.outputs.report_file }}"
+  
+      ##########################################################################
+      # Upload
+      ##########################################################################
+      - name: Upload Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.report.outputs.artifact_name }}
+          path: |
+            ${{ steps.report.outputs.report_file }}
+            ${{ env.HTML_FILE }}
+          retention-days: 90
+          if-no-files-found: error
