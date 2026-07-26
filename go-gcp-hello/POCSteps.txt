@@ -1,0 +1,5 @@
+Turn windows features on or off
+Enable hyperv and Windows subsystem for linux
+
+//powershell
+wsl --install -d Ubuntu
