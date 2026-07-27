@@ -90,6 +90,48 @@ jobs:
       id: tag-sha
       run: echo "sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
+    # Detect whether source files for the current language exist at this ref.
+    # Guards against the CodeQL exit-32 error ("no source code seen during build")
+    # when analysing a tag that pre-dates the introduction of a particular language.
+    - name: Check for source files
+      id: check-src
+      shell: bash
+      run: |
+        LANG="${{ matrix.language }}"
+        FOUND=false
+
+        case "$LANG" in
+          go)
+            if find . -name "*.go" \
+                      -not -path "*/.git/*" -not -path "*/vendor/*" \
+                      | grep -q .; then FOUND=true; fi
+            ;;
+          java-kotlin)
+            if find . \( -name "*.java" -o -name "*.kt" \) \
+                      -not -path "*/.git/*" -not -path "*/vendor/*" \
+                      | grep -q .; then FOUND=true; fi
+            ;;
+          javascript-typescript)
+            if find . \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" \) \
+                      -not -path "*/.git/*" -not -path "*/vendor/*" -not -path "*/node_modules/*" \
+                      | grep -q .; then FOUND=true; fi
+            ;;
+          actions)
+            if find .github/workflows \( -name "*.yml" -o -name "*.yaml" \) 2>/dev/null \
+                      | grep -q .; then FOUND=true; fi
+            ;;
+          *)
+            FOUND=true
+            ;;
+        esac
+
+        if [ "$FOUND" = "true" ]; then
+          echo "found=true" >> $GITHUB_OUTPUT
+        else
+          echo "found=false" >> $GITHUB_OUTPUT
+          echo "::warning::No source files found for language '${LANG}' at ref '${{ github.event.inputs.release_tag || github.ref_name }}'. Skipping CodeQL analysis."
+        fi
+
     # Add any setup steps before running the `github/codeql-action/init` action.
     # This includes steps like installing compilers or runtimes (`actions/setup-node`
     # or others). This is typically only required for manual builds.
@@ -98,6 +140,7 @@ jobs:
 
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
+      if: steps.check-src.outputs.found == 'true'
       uses: github/codeql-action/init@v4
       with:
         languages: ${{ matrix.language }}
@@ -127,6 +170,7 @@ jobs:
         exit 1
 
     - name: Perform CodeQL Analysis
+      if: steps.check-src.outputs.found == 'true'
       uses: github/codeql-action/analyze@v4
       with:
         category: "/language:${{matrix.language}}"
