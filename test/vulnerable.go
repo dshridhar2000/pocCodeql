@@ -18,7 +18,7 @@ func main() {
 	defer db.Close()
 
 	// test5
-	// Handler that contains multiple vulnerabilities
+	// Handler that contains multiple vulnerabilitiess
 	http.HandleFunc("/vulnerable", func(w http.ResponseWriter, r *http.Request) {
 		// Extract untrusted user input from the URL query parameters
 		userInput := r.URL.Query().Get("input")
