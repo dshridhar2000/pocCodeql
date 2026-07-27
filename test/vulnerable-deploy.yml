@@ -1,0 +1,41 @@
+name: "Vulnerable Automated Deploy"
+
+# ⚠️ VULNERABILITY: Unsafe Event Combination
+# Combining 'pull_request_target' with an immediate checkout of the HEAD ref 
+# allows malicious pull requests from forked repos to execute code with write permissions.
+on:
+  pull_request_target:
+    types: [opened, synchronized]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    # ⚠️ VULNERABILITY: Dangerous Permissions
+    # Providing write permissions to pull requests coming from external forks.
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+    # ⚠️ VULNERABILITY: Code Injection Via PR Code Checkout
+    # Checking out the untrusted fork's code into a privileged environment.
+    - name: Checkout Untrusted Fork Code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        repository: ${{ github.event.pull_request.head.repo.full_name }}
+
+    # If the code checked out above contains a malicious package file,
+    # running this install step executes the attacker's script instantly.
+    - name: Install Dependencies
+      run: |
+        npm install
+        npm run build
+
+    # ⚠️ VULNERABILITY: Leaking Sensitive Secrets
+    # Echoing production tokens into the log files where anyone can view them.
+    - name: Deploy to Cloud Production
+      run: |
+        echo "Deploying using system token: ${{ secrets.DEPLOY_TOKEN }}"
+        echo "Deployment complete."
