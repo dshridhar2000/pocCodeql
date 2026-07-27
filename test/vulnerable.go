@@ -23,13 +23,13 @@ func main() {
 		// Extract untrusted user input from the URL query parameters
 		userInput := r.URL.Query().Get("input")
 
-		// ALERT 1: SQL Injection (go/sql-injection)
-		// Triggered by concatenating untrusted user input directly into a SQL query string
-		query := fmt.Sprintf("SELECT * FROM users WHERE username = '%s'", userInput)
-		rows, err := db.Query(query)
-		if err == nil {
-			rows.Close()
+		query := "SELECT * FROM users WHERE username = $1"
+		
+		rows, err := db.Query(query, userInput)
+		if err != nil {
+		    return err
 		}
+		defer rows.Close()
 		
 		// ALERT 2: Path Traversal / File Inclusion (go/path-injection)
 		// Triggered by using untrusted input directly in file system operations without validation
