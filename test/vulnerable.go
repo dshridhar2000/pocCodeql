@@ -31,7 +31,7 @@ func main() {
 		}
 		defer rows.Close()
 		
-		// ALERT 2: Path Traversal / File Inclusion (go/path-injection)
+		// ALERT 2 : Path Traversal / File Inclusion (go/path-injection)
 		// Triggered by using untrusted input directly in file system operations without validation
 		vulnerablePath := filepath.Join("/var/www/uploads", userInput)
 		fileData, err := os.ReadFile(vulnerablePath)
