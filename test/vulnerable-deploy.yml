@@ -1,4 +1,4 @@
-name: "Vulnerable Automated Deploy"
+name: "Vulnerable Automated Deploy "
 
 # ⚠️ VULNERABILITY: Unsafe Event Combination
 # Combining 'pull_request_target' with an immediate checkout of the HEAD ref 
