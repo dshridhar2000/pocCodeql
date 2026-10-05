@@ -1,0 +1,14 @@
+name: Vulnerable Comment Triage
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print issue title
+        # VULNERABLE: Direct string interpolation expands the issue title directly into the bash terminal execution line.
+        run: |
+          echo "Processing issue: ${{ github.event.issue.title }}"
